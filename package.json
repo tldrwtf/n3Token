@@ -116,10 +116,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/your-username/twitch-token-manager.git"
+    "url": "https://github.com:tldrwtf/n3Token.git"
   },
-  "homepage": "https://github.com/your-username/twitch-token-manager#readme",
+  "homepage": "https://github.com/tldrwtf/n3Token/blob/main/README.md",
   "bugs": {
-    "url": "https://github.com/your-username/twitch-token-manager/issues"
+    "url": "https://github.com/tldrwtf/n3Token/issues"
   }
 }
