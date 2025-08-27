@@ -6,6 +6,8 @@ import { insertProxySchema, insertTokenSchema, insertOperationSchema } from "@sh
 import { z } from "zod";
 import multer from "multer";
 import { setupAuth, isAuthenticated } from "./auth";
+import fs from "fs";
+import path from "path";
 
 const upload = multer({ dest: 'uploads/' });
 
@@ -388,40 +390,112 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // File upload routes
   app.post("/api/upload/proxies", isAuthenticated, upload.single('file'), async (req: any, res) => {
+    let filePath: string | null = null;
+
     try {
       const userId = req.user.id;
       if (!req.file) {
         return res.status(400).json({ error: "No file uploaded" });
       }
 
-      const fs = require('fs');
-      const content = fs.readFileSync(req.file.path, 'utf8');
+      filePath = req.file.path;
+      if (!filePath) {
+        return res.status(400).json({ error: "Invalid file path" });
+      }
+
+      // Validate file exists and is readable
+      if (!fs.existsSync(filePath)) {
+        return res.status(400).json({ error: "Uploaded file not found" });
+      }
+
+      const content = fs.readFileSync(filePath, 'utf8');
       const lines = content.split('\n').filter((line: string) => line.trim());
-      
-      const proxies = lines.map((line: string) => {
-        const parts = line.trim().split(':');
-        if (parts.length < 2) return null;
-        
-        return {
+
+      if (lines.length === 0) {
+        return res.status(400).json({ error: "File is empty or contains no valid proxy entries" });
+      }
+
+      const proxies = [];
+      const errors = [];
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (!line) continue;
+
+        const parts = line.split(':');
+        if (parts.length < 2) {
+          errors.push(`Line ${i + 1}: Invalid format. Expected host:port[:username:password]`);
+          continue;
+        }
+
+        const host = parts[0].trim();
+        const portStr = parts[1].trim();
+        const username = parts[2]?.trim() || null;
+        const password = parts[3]?.trim() || null;
+
+        if (!host) {
+          errors.push(`Line ${i + 1}: Host is required`);
+          continue;
+        }
+
+        const port = parseInt(portStr, 10);
+        if (isNaN(port) || port < 1 || port > 65535) {
+          errors.push(`Line ${i + 1}: Invalid port number: ${portStr}`);
+          continue;
+        }
+
+        proxies.push({
           userId,
-          host: parts[0],
-          port: parseInt(parts[1]),
-          username: parts[2] || null,
-          password: parts[3] || null,
+          host,
+          port,
+          username,
+          password,
           status: "unchecked" as const,
           responseTime: null,
           failureCount: 0,
-        };
-      }).filter((proxy: any) => proxy !== null);
+        });
+      }
 
-      const createdProxies = await storage.createProxies(proxies);
-      
-      // Clean up uploaded file
-      fs.unlinkSync(req.file.path);
-      
-      res.json(createdProxies);
+      if (proxies.length === 0) {
+        return res.status(400).json({
+          error: "No valid proxies found in file",
+          details: errors.slice(0, 10) // Show first 10 errors
+        });
+      }
+
+      // Validate proxies against schema before inserting
+      const validatedProxies = proxies.map(proxy => {
+        try {
+          return insertProxySchema.parse(proxy);
+        } catch (validationError) {
+          throw new Error(`Proxy validation failed: ${validationError}`);
+        }
+      });
+
+      const createdProxies = await storage.createProxies(validatedProxies);
+
+      res.json({
+        success: true,
+        count: createdProxies.length,
+        proxies: createdProxies,
+        ...(errors.length > 0 && { warnings: errors.slice(0, 5) }) // Show first 5 warnings
+      });
+
     } catch (error) {
-      res.status(500).json({ error: "Failed to process proxy file" });
+      console.error("Error processing proxy file:", error);
+      res.status(500).json({
+        error: "Failed to process proxy file",
+        details: error instanceof Error ? error.message : "Unknown error"
+      });
+    } finally {
+      // Clean up uploaded file
+      if (filePath && fs.existsSync(filePath)) {
+        try {
+          fs.unlinkSync(filePath);
+        } catch (cleanupError) {
+          console.error("Failed to clean up uploaded file:", cleanupError);
+        }
+      }
     }
   });
 
